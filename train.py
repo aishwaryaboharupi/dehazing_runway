@@ -20,7 +20,7 @@ print(f"Running on device: {device}")
 # 3. Hyperparameters
 BATCH_SIZE = 16
 LEARNING_RATE = 1e-4
-EPOCHS = 10
+EPOCHS = 50
 NUM_SAMPLES = 5000
 
 # 4. Data & Model Setup
