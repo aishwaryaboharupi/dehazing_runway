@@ -1,48 +1,57 @@
+import os
 import torch
 from torch.utils.data import Dataset
-from torchvision import transforms
 from PIL import Image
-from huggingface_hub import hf_hub_download
+import torchvision.transforms as T
+from huggingface_hub import snapshot_download
 
-class FastDehazeDataset(Dataset):
-    def __init__(self, repo_id="NeuroPropel/CockpitAI_dehaze_dataset", token=None, num_samples=10000, transform=None):
-        self.repo_id = repo_id
-        self.token = token
-        self.num_samples = num_samples
+class CockpitDehazeDataset(Dataset):
+    def __init__(self, repo_id="NeuroPropel/CockpitAI_dehaze_dataset", split="train", crop_size=256):
+        self.crop_size = crop_size
+        self.split = split
         
-        self.transform = transform or transforms.Compose([
-            transforms.Resize((256, 256)),
-            transforms.ToTensor()
-        ])
+        print(f"Verifying/Downloading dataset split: {split} from Hugging Face...")
+        self.local_dir = snapshot_download(repo_id=repo_id, repo_type="dataset")
+        
+        self.pairs = []
+        if split == "train":
+            base_path = os.path.join(self.local_dir, "filtered_train")
+            for root, _, files in os.walk(base_path):
+                if "hazy" in root:
+                    clean_root = root.replace("hazy", "clean")
+                    for f in files:
+                        if f.lower().endswith(('.png', '.jpg', '.jpeg')):
+                            hazy_p = os.path.join(root, f)
+                            clean_p = os.path.join(clean_root, f)
+                            if os.path.exists(clean_p):
+                                self.pairs.append((hazy_p, clean_p))
+        else:
+            # Independent LARD Test Set Evaluation
+            test_hazy = os.path.join(self.local_dir, "test_data", "hazy")
+            test_clean = os.path.join(self.local_dir, "test_data", "clean")
+            for f in os.listdir(test_hazy):
+                if f.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    self.pairs.append((os.path.join(test_hazy, f), os.path.join(test_clean, f)))
+
+        print(f"Loaded {len(self.pairs)} image pairs for {split} split.")
 
     def __len__(self):
-        return self.num_samples
+        return len(self.pairs)
 
     def __getitem__(self, idx):
-        filename = f"{idx:06d}.png"
-        
-        try:
-            hazy_path = hf_hub_download(
-                repo_id=self.repo_id, 
-                filename=f"hazy/{filename}", 
-                repo_type="dataset", 
-                token=self.token
-            )
-            clean_path = hf_hub_download(
-                repo_id=self.repo_id, 
-                filename=f"clean/{filename}", 
-                repo_type="dataset", 
-                token=self.token
-            )
-            
-            hazy_img = Image.open(hazy_path).convert("RGB")
-            clean_img = Image.open(clean_path).convert("RGB")
-        except Exception:
-            hazy_img = Image.new("RGB", (256, 256))
-            clean_img = Image.new("RGB", (256, 256))
+        hazy_p, clean_p = self.pairs[idx]
+        hazy_img = Image.open(hazy_p).convert("RGB")
+        clean_img = Image.open(clean_p).convert("RGB")
 
-        if self.transform:
-            hazy_img = self.transform(hazy_img)
-            clean_img = self.transform(clean_img)
+        # Dynamic Augmentations (Prevents Overfitting)
+        if self.split == "train":
+            i, j, h, w = T.RandomCrop.get_params(hazy_img, output_size=(self.crop_size, self.crop_size))
+            hazy_img = T.functional.crop(hazy_img, i, j, h, w)
+            clean_img = T.functional.crop(clean_img, i, j, h, w)
 
-        return hazy_img, clean_img
+            if torch.rand(1) > 0.5:
+                hazy_img = T.functional.hflip(hazy_img)
+                clean_img = T.functional.hflip(clean_img)
+
+        transform = T.Compose([T.ToTensor()])
+        return transform(hazy_img), transform(clean_img)
