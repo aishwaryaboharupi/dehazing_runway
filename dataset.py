@@ -10,11 +10,21 @@ class CockpitDehazeDataset(Dataset):
         self.crop_size = crop_size
         self.split = split
         
-        # Read token from param or environment variable
         hf_token = token or os.getenv("HF_TOKEN")
         
-        print(f"Verifying/Downloading dataset split: {split} from Hugging Face...")
-        self.local_dir = snapshot_download(repo_id=repo_id, repo_type="dataset", token=hf_token)
+        # Download ONLY the required folder (Skips 150,000 old/junk commit files!)
+        if split == "train":
+            allow_patterns = "filtered_train/*"
+        else:
+            allow_patterns = "test_data/*"
+
+        print(f"Downloading ONLY {split} data ({allow_patterns})...")
+        self.local_dir = snapshot_download(
+            repo_id=repo_id, 
+            repo_type="dataset", 
+            token=hf_token,
+            allow_patterns=allow_patterns
+        )
         
         self.pairs = []
         if split == "train":
@@ -29,14 +39,14 @@ class CockpitDehazeDataset(Dataset):
                             if os.path.exists(clean_p):
                                 self.pairs.append((hazy_p, clean_p))
         else:
-            # Independent LARD Test Set Evaluation
             test_hazy = os.path.join(self.local_dir, "test_data", "hazy")
             test_clean = os.path.join(self.local_dir, "test_data", "clean")
-            for f in os.listdir(test_hazy):
-                if f.lower().endswith(('.png', '.jpg', '.jpeg')):
-                    self.pairs.append((os.path.join(test_hazy, f), os.path.join(test_clean, f)))
+            if os.path.exists(test_hazy):
+                for f in os.listdir(test_hazy):
+                    if f.lower().endswith(('.png', '.jpg', '.jpeg')):
+                        self.pairs.append((os.path.join(test_hazy, f), os.path.join(test_clean, f)))
 
-        print(f"Loaded {len(self.pairs)} image pairs for {split} split.")
+        print(f"SUCCESS! Loaded {len(self.pairs)} clean image pairs for {split} split.")
 
     def __len__(self):
         return len(self.pairs)
@@ -46,7 +56,6 @@ class CockpitDehazeDataset(Dataset):
         hazy_img = Image.open(hazy_p).convert("RGB")
         clean_img = Image.open(clean_p).convert("RGB")
 
-        # Dynamic Augmentations (Prevents Overfitting)
         if self.split == "train":
             i, j, h, w = T.RandomCrop.get_params(hazy_img, output_size=(self.crop_size, self.crop_size))
             hazy_img = T.functional.crop(hazy_img, i, j, h, w)
