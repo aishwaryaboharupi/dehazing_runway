@@ -6,12 +6,15 @@ import torchvision.transforms as T
 from huggingface_hub import snapshot_download
 
 class CockpitDehazeDataset(Dataset):
-    def __init__(self, repo_id="NeuroPropel/CockpitAI_dehaze_dataset", split="train", crop_size=256):
+    def __init__(self, repo_id="NeuroPropel/CockpitAI_dehaze_dataset", split="train", crop_size=256, token=None):
         self.crop_size = crop_size
         self.split = split
         
+        # Read token from param or environment variable
+        hf_token = token or os.getenv("HF_TOKEN")
+        
         print(f"Verifying/Downloading dataset split: {split} from Hugging Face...")
-        self.local_dir = snapshot_download(repo_id=repo_id, repo_type="dataset")
+        self.local_dir = snapshot_download(repo_id=repo_id, repo_type="dataset", token=hf_token)
         
         self.pairs = []
         if split == "train":
