@@ -1,3 +1,5 @@
+import os
+import sys
 import gc
 import torch
 import torch.nn as nn
@@ -20,30 +22,30 @@ class HFDehazeIterableDataset(IterableDataset):
             clear_tensor = self.transform(item['clear'].convert("RGB"))
             yield hazy_tensor, clear_tensor
 
-def train(model_name="aodnet", epochs=5, batch_size=16, lr=1e-3):
-    # Clear CUDA memory before starting a new model
+def train(model_name="mamba", epochs=30, batch_size=8, lr=1e-3, save_every=5):
     gc.collect()
     torch.cuda.empty_cache()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"--> Using Device: {device}")
     
-    # Auto-adjust batch size for memory-heavy models (Transformer / Mamba)
-    if model_name in ["transformer", "mamba"]:
+    os.makedirs("checkpoints", exist_ok=True)
+
+    # Adjust batch size automatically for VRAM-heavy models
+    if model_name in ["transformer", "mamba"] and batch_size > 8:
         batch_size = 8
-        print(f"--> Reduced batch size to {batch_size} for {model_name} to optimize GPU VRAM.")
 
     model = get_model(model_name).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     criterion = nn.MSELoss()
 
-    print(f"--> Loading dataset stream for model: '{model_name}'...")
+    print(f"--> Loading dataset stream for target model: '{model_name}'...")
     hf_ds = load_dataset("NeuroPropel/CockpitAI_dehaze_clean", split="train", streaming=True)
     
     dataset = HFDehazeIterableDataset(hf_ds)
     loader = DataLoader(dataset, batch_size=batch_size, num_workers=2)
 
-    print(f"--> Starting memory-safe training for {epochs} epochs on {model_name}...\n")
+    print(f"--> Starting dedicated training for {epochs} epochs on [{model_name.upper()}]...\n")
 
     for epoch in range(1, epochs + 1):
         model.train()
@@ -69,14 +71,18 @@ def train(model_name="aodnet", epochs=5, batch_size=16, lr=1e-3):
         avg_loss = running_loss / max(step, 1)
         print(f"=== Epoch [{epoch}/{epochs}] Complete | Avg Loss: {avg_loss:.4f} ===\n")
 
-    save_filename = f"model_{model_name}.pth"
-    torch.save(model.state_dict(), save_filename)
-    print(f"--> Saved {save_filename} successfully!")
-    
-    # Cleanup memory after training ends
-    del model, optimizer, loader, dataset, hf_ds
-    gc.collect()
-    torch.cuda.empty_cache()
+        # Save checkpoint every 'save_every' epochs and as final model file
+        if epoch % save_every == 0 or epoch == epochs:
+            ckpt_path = f"checkpoints/{model_name}_epoch_{epoch}.pth"
+            torch.save(model.state_dict(), ckpt_path)
+            torch.save(model.state_dict(), f"model_{model_name}.pth")
+            print(f"--> Saved checkpoint: {ckpt_path}\n")
+
+    print(f"--> Dedicated {model_name.upper()} Training Complete!")
 
 if __name__ == "__main__":
-    train(model_name="aodnet", epochs=5, batch_size=16)
+    # Allows command-line arguments: python train.py <model_name> <epochs>
+    target_model = sys.argv[1] if len(sys.argv) > 1 else "mamba"
+    target_epochs = int(sys.argv[2]) if len(sys.argv) > 2 else 30
+    
+    train(model_name=target_model, epochs=target_epochs)
