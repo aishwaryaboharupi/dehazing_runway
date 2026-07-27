@@ -1,45 +1,53 @@
 import os
-import torch
-from torch.utils.data import Dataset
-from PIL import Image
-import torchvision.transforms as T
-from datasets import load_dataset
+import glob
+from datasets import Dataset, Image, DatasetDict
 
-class CockpitDehazeDataset(Dataset):
-    def __init__(self, repo_id="NeuroPropel/CockpitAI_dehaze_dataset", split="train", crop_size=256, token=None):
-        self.crop_size = crop_size
-        self.split = split
-        hf_token = token or os.getenv("HF_TOKEN")
+def prepare_and_upload_clean_dataset(
+    root_dir="large_dataset/train", 
+    hf_repo="NeuroPropel/CockpitAI_dehaze_clean"
+):
+    hazy_dir = os.path.join(root_dir, "hazy")
+    clean_dir = os.path.join(root_dir, "clean")
+
+    print("1. Indexing clean images...")
+    clean_lookup = {}
+    clean_paths = glob.glob(os.path.join(clean_dir, "**", "*.png"), recursive=True)
+
+    for path in clean_paths:
+        filename = os.path.basename(path)
+        base_id = filename.replace('.png', '').split('_var_')[0]
+        clean_lookup[base_id] = path
+
+    print(f"Found {len(clean_lookup)} base clean scenes.")
+
+    print("2. Deduplicating hazy images (1 variation per scene)...")
+    all_hazy_paths = glob.glob(os.path.join(hazy_dir, "**", "*.png"), recursive=True)
+
+    hazy_list = []
+    clean_list = []
+    seen_base_ids = set()
+
+    for path in sorted(all_hazy_paths):
+        filename = os.path.basename(path)
+        base_id = filename.replace('.png', '').split('_var_')[0]
         
-        print(f"Loading {split} split via Hugging Face Datasets API...")
-        
-        # Stream image metadata directly without downloading git commit trees
-        if split == "train":
-            self.dataset = load_dataset(repo_id, data_dir="filtered_train", token=hf_token, split="train")
-        else:
-            self.dataset = load_dataset(repo_id, data_dir="test_data", token=hf_token, split="train")
+        if base_id in clean_lookup and base_id not in seen_base_ids:
+            seen_base_ids.add(base_id)
+            hazy_list.append(path)
+            clean_list.append(clean_lookup[base_id])
 
-        print(f"SUCCESS! Loaded {len(self.dataset)} image pairs for {split} split.")
+    print(f"Filtered down to {len(hazy_list)} UNIQUE, genuine scene pairs.")
 
-    def __len__(self):
-        return len(self.dataset)
+    data_dict = {"hazy": hazy_list, "clear": clean_list}
+    hf_dataset = Dataset.from_dict(data_dict)
+    hf_dataset = hf_dataset.cast_column("hazy", Image())
+    hf_dataset = hf_dataset.cast_column("clear", Image())
 
-    def __getitem__(self, idx):
-        item = self.dataset[idx]
-        
-        # Load PIL images directly from HF dataset object
-        hazy_img = item["hazy"].convert("RGB") if isinstance(item["hazy"], Image.Image) else Image.open(item["hazy"]).convert("RGB")
-        clean_img = item["clean"].convert("RGB") if isinstance(item["clean"], Image.Image) else Image.open(item["clean"]).convert("RGB")
+    dataset_dict = DatasetDict({"train": hf_dataset})
 
-        # Dynamic Augmentations for Training
-        if self.split == "train":
-            i, j, h, w = T.RandomCrop.get_params(hazy_img, output_size=(self.crop_size, self.crop_size))
-            hazy_img = T.functional.crop(hazy_img, i, j, h, w)
-            clean_img = T.functional.crop(clean_img, i, j, h, w)
+    print(f"3. Uploading clean dataset to Hugging Face repo: {hf_repo}...")
+    dataset_dict.push_to_hub(hf_repo)
+    print("SUCCESS! Unique dataset is live on Hugging Face!")
 
-            if torch.rand(1) > 0.5:
-                hazy_img = T.functional.hflip(hazy_img)
-                clean_img = T.functional.hflip(clean_img)
-
-        transform = T.Compose([T.ToTensor()])
-        return transform(hazy_img), transform(clean_img)
+if __name__ == "__main__":
+    prepare_and_upload_clean_dataset()

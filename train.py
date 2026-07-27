@@ -1,51 +1,65 @@
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
-from dataset import CockpitDehazeDataset
-from models import AODNet
-import os
+from torch.utils.data import DataLoader, IterableDataset
+from torchvision import transforms
+from datasets import load_dataset
+from models import get_model
 
-def train():
+class HFDehazeIterableDataset(IterableDataset):
+    def __init__(self, hf_dataset, img_size=(256, 256)):
+        self.hf_dataset = hf_dataset
+        self.transform = transforms.Compose([
+            transforms.Resize(img_size),
+            transforms.ToTensor()
+        ])
+
+    def __iter__(self):
+        for item in self.hf_dataset:
+            hazy_tensor = self.transform(item['hazy'].convert("RGB"))
+            clear_tensor = self.transform(item['clear'].convert("RGB"))
+            yield hazy_tensor, clear_tensor
+
+def train(model_name="aodnet", epochs=5, batch_size=16, lr=1e-3):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Training on device: {device}")
-
-    # Hyperparameters
-    batch_size = 16
-    epochs = 20
-    lr = 1e-4
-
-    train_dataset = CockpitDehazeDataset(split="train", crop_size=256)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=2)
-
-    model = AODNet().to(device)
-    criterion = nn.MSELoss()
+    print(f"--> Using Device: {device}")
+    
+    model = get_model(model_name).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    criterion = nn.MSELoss()
 
-    os.makedirs("checkpoints", exist_ok=True)
+    print(f"--> Streaming dataset from Hugging Face for model: '{model_name}'...")
+    hf_ds = load_dataset("NeuroPropel/CockpitAI_dehaze_clean", split="train", streaming=True)
+    loader = DataLoader(HFDehazeIterableDataset(hf_ds), batch_size=batch_size)
+
+    print(f"--> Starting training for {epochs} epochs...\n")
 
     for epoch in range(1, epochs + 1):
         model.train()
         running_loss = 0.0
-
-        for batch_idx, (hazy, clean) in enumerate(train_loader, 1):
-            hazy, clean = hazy.to(device), clean.to(device)
+        step = 0
+        
+        for hazy_imgs, clear_imgs in loader:
+            hazy_imgs = hazy_imgs.to(device)
+            clear_imgs = clear_imgs.to(device)
 
             optimizer.zero_grad()
-            outputs = model(hazy)
-            loss = criterion(outputs, clean)
+            outputs = model(hazy_imgs)
+            loss = criterion(outputs, clear_imgs)
             loss.backward()
             optimizer.step()
 
             running_loss += loss.item()
+            step += 1
 
-            if batch_idx % 20 == 0 or batch_idx == len(train_loader):
-                print(f"Epoch [{epoch}/{epochs}] | Batch [{batch_idx}/{len(train_loader)}] | Loss: {loss.item():.5f}")
+            if step % 50 == 0:
+                print(f"Epoch [{epoch}/{epochs}] | Step {step} | Loss: {running_loss/step:.4f}")
 
-        avg_loss = running_loss / len(train_loader)
-        print(f"--> Epoch {epoch} Average Loss: {avg_loss:.5f}\n")
+        avg_loss = running_loss / max(step, 1)
+        print(f"\n=== Epoch [{epoch}/{epochs}] Complete | Avg Loss: {avg_loss:.4f} ===\n")
 
-        # Save checkpoint
-        torch.save(model.state_dict(), f"checkpoints/model1_aodnet_epoch_{epoch}.pth")
+    save_filename = f"model_{model_name}.pth"
+    torch.save(model.state_dict(), save_filename)
+    print(f"--> Model weights saved locally to {save_filename}!")
 
 if __name__ == "__main__":
-    train()
+    train(model_name="aodnet", epochs=5, batch_size=16)
