@@ -1,3 +1,4 @@
+import gc
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, IterableDataset
@@ -15,15 +16,23 @@ class HFDehazeIterableDataset(IterableDataset):
 
     def __iter__(self):
         for item in self.hf_dataset:
-            # Convert directly on batch fetch
             hazy_tensor = self.transform(item['hazy'].convert("RGB"))
             clear_tensor = self.transform(item['clear'].convert("RGB"))
             yield hazy_tensor, clear_tensor
 
 def train(model_name="aodnet", epochs=5, batch_size=16, lr=1e-3):
+    # Clear CUDA memory before starting a new model
+    gc.collect()
+    torch.cuda.empty_cache()
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"--> Using Device: {device}")
     
+    # Auto-adjust batch size for memory-heavy models (Transformer / Mamba)
+    if model_name in ["transformer", "mamba"]:
+        batch_size = 8
+        print(f"--> Reduced batch size to {batch_size} for {model_name} to optimize GPU VRAM.")
+
     model = get_model(model_name).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     criterion = nn.MSELoss()
@@ -31,7 +40,6 @@ def train(model_name="aodnet", epochs=5, batch_size=16, lr=1e-3):
     print(f"--> Loading dataset stream for model: '{model_name}'...")
     hf_ds = load_dataset("NeuroPropel/CockpitAI_dehaze_clean", split="train", streaming=True)
     
-    # num_workers=2 background fetches images without crashing RAM
     dataset = HFDehazeIterableDataset(hf_ds)
     loader = DataLoader(dataset, batch_size=batch_size, num_workers=2)
 
@@ -64,6 +72,11 @@ def train(model_name="aodnet", epochs=5, batch_size=16, lr=1e-3):
     save_filename = f"model_{model_name}.pth"
     torch.save(model.state_dict(), save_filename)
     print(f"--> Saved {save_filename} successfully!")
+    
+    # Cleanup memory after training ends
+    del model, optimizer, loader, dataset, hf_ds
+    gc.collect()
+    torch.cuda.empty_cache()
 
 if __name__ == "__main__":
     train(model_name="aodnet", epochs=5, batch_size=16)
