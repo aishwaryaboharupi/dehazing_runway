@@ -1,3 +1,4 @@
+import os
 import torch
 import numpy as np
 from datasets import load_dataset
@@ -6,10 +7,19 @@ from skimage.metrics import peak_signal_noise_ratio as psnr
 from skimage.metrics import structural_similarity as ssim
 from models import get_model
 
+
 def evaluate_model(model_name, weight_path, num_samples=50):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = get_model(model_name).to(device)
-    model.load_state_dict(torch.load(weight_path, map_location=device))
+
+    # Safely load weights whether saved as raw state_dict or full resume dictionary
+    checkpoint = torch.load(weight_path, map_location=device)
+    if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+        state_dict = checkpoint["model_state_dict"]
+    else:
+        state_dict = checkpoint
+
+    model.load_state_dict(state_dict)
     model.eval()
 
     transform = transforms.Compose([
@@ -18,12 +28,12 @@ def evaluate_model(model_name, weight_path, num_samples=50):
     ])
 
     dataset = load_dataset("NeuroPropel/CockpitAI_dehaze_clean", split="train", streaming=True)
-    
+
     psnr_scores = []
     ssim_scores = []
 
     print(f"\n--> Evaluating '{model_name}' on {num_samples} samples...")
-    
+
     with torch.no_grad():
         for i, item in enumerate(dataset):
             if i >= num_samples:
@@ -47,11 +57,11 @@ def evaluate_model(model_name, weight_path, num_samples=50):
     avg_psnr = np.mean(psnr_scores)
     avg_ssim = np.mean(ssim_scores)
 
-    print(f"=== Results for {model_name} ===")
+    print(f"\n=== Results for {model_name} ===")
     print(f"Average PSNR: {avg_psnr:.2f} dB")
     print(f"Average SSIM: {avg_ssim:.4f}")
     return avg_psnr, avg_ssim
 
+
 if __name__ == "__main__":
-    # Example evaluation usage
-    evaluate_model("aodnet", "model_aodnet.pth")
+    evaluate_model("ffanet", "checkpoints/ffanet_resume_epoch_30.pth")
