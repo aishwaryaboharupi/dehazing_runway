@@ -1,21 +1,32 @@
+# Python & Environment
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+ai_env/
+venv/
+env/
+
+# Datasets & Heavy Media
 hazy/
 clean/
 large_dataset/
-runs/
 *.png
 *.jpg
 *.jpeg
+*.mp4
+*.avi
+*.m4a
+*.mov
+
+# Model Checkpoints & Output Weights
 *.pth
 *.pt
-__pycache__/
-.ipynb_checkpoints/
-checkpoints/
-*.pth
-*.png
-*.jpg
-*.jpeg
-*.pth
+*.onnx
+*.bin
 checkpoints/
 results/
 
-ai_env/
+# TensorBoard & Logging
+runs/
+logs/
